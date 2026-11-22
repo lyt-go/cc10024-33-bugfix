@@ -8,33 +8,59 @@ from app.services.base import BaseModuleService, register_hook
 from app import persistence as persist
 
 
-def _record_recovery_to_history(entry: dict[str, Any]) -> None:
-    """恢复任务确认恢复后写入run_history。"""
-    run_rows = store.rows("run_history")
-    new_id = max((int(r.get("id", 0)) for r in run_rows), default=0) + 1
-    record = {
-        "id": new_id,
-        "记录编号": f"RUN-RECOVER-{new_id:04d}",
-        "关联计划": entry.get("关联计划", ""),
-        "开始时间": persist.now_iso(),
-        "结束时间": "",
-        "采集行数": "恢复重采",
-        "失败行数": entry.get("已重试次数", "0"),
-        "执行日志": f"从error_recover任务{entry.get('任务编号')}恢复",
-        "异常摘要": entry.get("错误类型", ""),
-        "status": "运行中",
-        "pending": True,
-        "abnormal": False,
-        "version": "",
-        "updated_at": persist.now_iso(),
-    }
-    run_rows.append(record)
-    persist.append_jsonl("runs", "run_history.jsonl", {
-        "module": "run_history", "entity": "运行记录", "entry_id": new_id,
-        "status": "运行中", "version": "", "action": "auto_create_from_recovery",
-        "timestamp": persist.now_iso(), "abnormal": False,
-        "source_module": "error_recover", "source_id": entry.get("id"),
-    })
+def _record_recovery_to_history(entry: dict[str, Any]) -> bool:
+    """恢复任务确认恢复后写入run_history，同一采集来源只结算一次。
+
+    返回 False 表示该恢复任务已有完整回执（重试或补交），不再重复追加。
+    """
+    if persist.has_settled_source(
+        "runs", "run_history.jsonl", "error_recover", entry.get("id")
+    ):
+        return False
+    with persist.receipt_lock(), persist.journal_lock("runs", "run_history.jsonl"):
+        if persist.has_settled_source(
+            "runs", "run_history.jsonl", "error_recover", entry.get("id")
+        ):
+            return False
+        run_rows = store.rows("run_history")
+        # 确认恢复已成功、仅回执被截断时，沿用内存里的运行记录补日志。
+        existing = next(
+            (r for r in run_rows
+             if r.get("source_module") == "error_recover"
+             and str(r.get("source_id")) == str(entry.get("id"))),
+            None,
+        )
+        new_id = existing.get("id") if existing else (
+            max((int(r.get("id", 0)) for r in run_rows), default=0) + 1
+        )
+        if existing is None:
+            record = {
+                "id": new_id,
+                "记录编号": f"RUN-RECOVER-{new_id:04d}",
+                "关联计划": entry.get("关联计划", ""),
+                "开始时间": persist.now_iso(),
+                "结束时间": "",
+                "采集行数": "恢复重采",
+                "失败行数": entry.get("已重试次数", "0"),
+                "执行日志": f"从error_recover任务{entry.get('任务编号')}恢复",
+                "异常摘要": entry.get("错误类型", ""),
+                "status": "运行中",
+                "pending": True,
+                "abnormal": False,
+                "version": "",
+                "updated_at": persist.now_iso(),
+                "source_module": "error_recover",
+                "source_id": entry.get("id"),
+            }
+            run_rows.append(record)
+        persist.append_jsonl("runs", "run_history.jsonl", {
+            # 来源字段放在最前：回执即使被截断，也能据此关联到原恢复任务。
+            "source_module": "error_recover", "source_id": entry.get("id"),
+            "module": "run_history", "entity": "运行记录", "entry_id": new_id,
+            "status": "运行中", "version": "", "action": "auto_create_from_recovery",
+            "timestamp": persist.now_iso(), "abnormal": False,
+        })
+    return True
 
 register_hook("error_recover", "确认恢复", _record_recovery_to_history)
 

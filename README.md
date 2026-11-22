@@ -77,5 +77,18 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 运行历史与断尾回执
+
+- `data/runs/*.jsonl` 由 `app/persistence.py` 统一追加。追加前会检查日志末尾：
+  若最后一行只写了半条，会先隔离到 `<日志>.corrupt`，再从完整记录之后另起一行，
+  不会把损坏内容和下一笔回执拼成一条“成功记录”。
+- 读取使用容错解析：损坏行被跳过并作为待核记录返回，已有完整记录照常可读。
+- `GET /api/run_history/recent` 返回 `{ items, pending_receipts }`，
+  `pending_receipts` 按 `source_module`/`source_id` 关联到断尾回执的采集来源。
+- `POST /api/run_history/resubmit-receipt`，请求体
+  `{ "source_module": "batch_queue", "source_id": 4 }`，按来源补交断尾回执；
+  同一来源已有完整回执时不会重复结算，也不会重做已成功采集的页面。
+
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA

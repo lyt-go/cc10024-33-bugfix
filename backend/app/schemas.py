@@ -29,3 +29,8 @@ class EntryPayload(BaseModel):
 class ActionPayload(BaseModel):
     action: str
     remark: str | None = None
+
+
+class ResubmitPayload(BaseModel):
+    source_module: str
+    source_id: int

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
+from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult, ResubmitPayload
 from app.services import service_for
 
 router = APIRouter(prefix="/api", tags=["业务资源"])
@@ -73,6 +73,16 @@ def export_entries(
     )
 
 
+@router.get("/run_history/recent", response_model=dict)
+def recent_runs(limit: int = Query(default=20, ge=1, le=200)) -> dict[str, Any]:
+    """运行历史读取入口：完整记录 + 待核记录。"""
+    from app.services.run_history import RunHistoryService
+
+    service = require_service("run_history")
+    assert isinstance(service, RunHistoryService)
+    return service.list_recent_with_pending(limit)
+
+
 @router.get("/{module}/{entry_id}", response_model=dict)
 def get_entry(module: str, entry_id: int) -> dict[str, Any]:
     service = require_service(module)
@@ -89,6 +99,17 @@ def create_entry(module: str, payload: EntryPayload) -> ActionResult:
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
     return ActionResult(ok=True, message=f"{service.ENTITY}已登记", entry=entry)
+
+
+@router.post("/run_history/resubmit-receipt", response_model=ActionResult)
+def resubmit_receipt(payload: ResubmitPayload) -> ActionResult:
+    """按采集来源补交断尾回执；同一来源只结算一次。"""
+    from app.services.run_history import RunHistoryService
+
+    service = require_service("run_history")
+    assert isinstance(service, RunHistoryService)
+    result, message = service.resubmit_receipt(payload.source_module, payload.source_id)
+    return ActionResult(ok=result is not None, message=message)
 
 
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)
